@@ -37,6 +37,12 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fL --retry 3 --retry-delay 2 --retry-all-errors -o "$tmp" "$tarball_url"
+
+          if [ ! -s "$tmp" ]; then
+            echo "Downloaded tarball is empty: $tarball_url" >&2
+            exit 1
+          fi
+
           sha256="$(sha256sum "$tmp" | awk '{print $1}')"
 
           echo "tarball=$tarball_url" >> "$GITHUB_OUTPUT"
@@ -75,7 +81,9 @@ jobs:
 
           if n_url != 1 or n_sha != 1:
               raise SystemExit(
-                  f"Unexpected formula shape (url replacements={n_url}, sha replacements={n_sha})"
+                  "Unexpected formula shape: expected exactly one top-level 'url' line and one "
+                  "top-level 'sha256' line "
+                  f"(url replacements={n_url}, sha replacements={n_sha})."
               )
 
           if next_contents == formula_contents:
