@@ -8,7 +8,7 @@ class Tambo < Formula
   depends_on "node"
 
   def install
-    system "npm", "install", *std_npm_args
+    system "npm", "install", *std_npm_args, "--omit=dev"
     bin.install_symlink libexec/"bin/tambo"
   end
 

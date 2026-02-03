@@ -5,12 +5,18 @@ on:
   schedule:
     - cron: "0 6 * * *"
 
+concurrency:
+  group: update-tambo-formula
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   update:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,8 +31,14 @@ jobs:
         id: npm
         run: |-
           set -euo pipefail
+
           tarball_url="$(npm view tambo dist.tarball)"
-          sha256="$(curl -fsSL "$tarball_url" | sha256sum | awk '{print $1}')"
+
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fL --retry 3 --retry-delay 2 --retry-all-errors -o "$tmp" "$tarball_url"
+          sha256="$(sha256sum "$tmp" | awk '{print $1}')"
+
           echo "tarball=$tarball_url" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
@@ -46,18 +58,25 @@ jobs:
           tarball_url = os.environ["TAMBO_TARBALL"]
           sha256 = os.environ["TAMBO_SHA256"]
 
-          next_contents = re.sub(
+          next_contents, n_url = re.subn(
               r'^  url ".*"$',
               f'  url "{tarball_url}"',
               formula_contents,
               flags=re.MULTILINE,
+              count=1,
           )
-          next_contents = re.sub(
+          next_contents, n_sha = re.subn(
               r'^  sha256 ".*"$',
               f'  sha256 "{sha256}"',
               next_contents,
               flags=re.MULTILINE,
+              count=1,
           )
+
+          if n_url != 1 or n_sha != 1:
+              raise SystemExit(
+                  f"Unexpected formula shape (url replacements={n_url}, sha replacements={n_sha})"
+              )
 
           if next_contents == formula_contents:
               print("Formula already up-to-date")
