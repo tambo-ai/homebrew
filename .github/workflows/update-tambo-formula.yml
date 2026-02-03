@@ -1,0 +1,107 @@
+name: Update tambo formula
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: update-tambo-formula
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Read npm metadata
+        id: npm
+        run: |-
+          set -euo pipefail
+
+          tarball_url="$(npm view tambo dist.tarball)"
+
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fL --retry 3 --retry-delay 2 --retry-all-errors -o "$tmp" "$tarball_url"
+
+          if [ ! -s "$tmp" ]; then
+            echo "Downloaded tarball is empty: $tarball_url" >&2
+            exit 1
+          fi
+
+          if ! tar -tzf "$tmp" >/dev/null 2>&1; then
+            echo "Downloaded tarball appears to be corrupted: $tarball_url" >&2
+            exit 1
+          fi
+
+          sha256="$(sha256sum "$tmp" | awk '{print $1}')"
+
+          echo "tarball=$tarball_url" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula
+        env:
+          TAMBO_TARBALL: ${{ steps.npm.outputs.tarball }}
+          TAMBO_SHA256: ${{ steps.npm.outputs.sha256 }}
+        run: |-
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          formula_path = pathlib.Path("Formula/tambo.rb")
+          formula_contents = formula_path.read_text(encoding="utf-8")
+
+          tarball_url = os.environ["TAMBO_TARBALL"]
+          sha256 = os.environ["TAMBO_SHA256"]
+
+          next_contents, n_url = re.subn(
+              r'^  url ".*"$',
+              f'  url "{tarball_url}"',
+              formula_contents,
+              flags=re.MULTILINE,
+              count=1,
+          )
+          next_contents, n_sha = re.subn(
+              r'^  sha256 ".*"$',
+              f'  sha256 "{sha256}"',
+              next_contents,
+              flags=re.MULTILINE,
+              count=1,
+          )
+
+          if n_url != 1 or n_sha != 1:
+              raise SystemExit(
+                  "Unexpected formula shape: expected exactly one top-level 'url' line and one "
+                  "top-level 'sha256' line "
+                  f"(url replacements={n_url}, sha replacements={n_sha})."
+              )
+
+          if next_contents == formula_contents:
+              print("Formula already up-to-date")
+              raise SystemExit(0)
+
+          formula_path.write_text(next_contents, encoding="utf-8")
+          PY
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          branch: automation/update-tambo-formula
+          title: "chore: update tambo formula"
+          commit-message: "chore: update tambo formula"
+          body: "Automated update of Formula/tambo.rb from npm metadata."
